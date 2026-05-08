@@ -1,0 +1,366 @@
+---
+title: "Final Project (League of Legends Match Dataset Analysis)"
+author: "Guillermo"
+date: "2026-05-06"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+```
+
+```{r}
+library(tidyverse)
+library(janitor)
+```
+
+<!-- # 1. Import the data -->
+
+```{r}
+league <- read_csv("league_data.csv", show_col_types = FALSE)
+league <- clean_names(league)
+```
+
+<!-- # 2. Data Cleaning -->
+
+```{r}
+league_clean <- league %>%
+  filter(game_mode == "CLASSIC") %>%
+  distinct() %>% 
+  filter(!is.na(win)) %>%
+  filter(individual_position != "Invalid") %>%
+  select(-game_version) %>%
+  group_by(puuid) %>%
+  mutate(
+    summoner_name = ifelse(
+      is.na(summoner_name) | summoner_name == "",
+      paste0("Unknown_", cur_group_id()),
+      summoner_name
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    win = as.logical(win),
+    win_numeric = ifelse(win == TRUE, 1, 0),
+    game_duration_min = game_duration / 60,
+    kda = (kills + assists) / ifelse(deaths == 0, 1, deaths)
+  )
+```
+
+# 3. Data Manipulation
+
+### 3.a Summary Role
+
+```{r}
+role_summary <- league_clean %>%
+  group_by(individual_position) %>%
+  summarise(
+    games = n(),
+    win_rate = round(mean(win_numeric) * 100, 2),
+    avg_kills = round(mean(kills), 2),
+    avg_deaths = round(mean(deaths), 2),
+    avg_assists = round(mean(assists), 2),
+    avg_damage = round(mean(total_damage_dealt_to_champions), 2),
+    avg_gold = round(mean(gold_earned), 2)
+  ) %>%
+  arrange(desc(win_rate))
+
+role_summary
+```
+
+I analyzed the average performance metrics for each role, including win rate, kills, assists, damage, and gold earned. This helped identify which roles performed better overall in the dataset.
+
+### 3.b Winrate per Champion and Role
+
+```{r}
+best_champions <- league_clean %>%
+  group_by(individual_position, champion_name) %>%
+  summarise(
+    games = n(),
+    win_rate = round(mean(win_numeric) * 100, 2),
+    .groups = "drop"
+  ) %>%
+  filter(games >= 100) %>%
+  group_by(individual_position) %>%
+  slice_max(order_by = win_rate, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(win_rate))
+
+best_champions
+```
+
+I identified the champion with the highest win rate in each role using champions with at least 50 games played to avoid unreliable results from small sample sizes.
+
+### 3.c Average KDA per role for winning players
+
+```{r}
+winner_kda_by_role <- league_clean %>%
+  filter(win == TRUE) %>%
+  group_by(individual_position) %>%
+  summarise(
+    avg_kda = round(mean(kda), 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_kda))
+
+winner_kda_by_role
+```
+
+### 3.d Average KDA per role For Loser Players
+
+```{r}
+loser_kda_by_role <- league_clean %>%
+  filter(win == FALSE) %>%
+  group_by(individual_position) %>%
+  summarise(
+    avg_kda = round(mean(kda), 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_kda))
+
+loser_kda_by_role
+```
+
+I compared the average KDA of winners and losers across each role to better understand how player performance relates to winning games.
+
+### 3.e Percentages of Win and Losses
+
+```{r}
+win_loss_percentage <- league_clean %>%
+  group_by(win) %>%
+  summarise(
+    total_games = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    percentage = round((total_games / sum(total_games)) * 100, 2)
+  )
+
+win_loss_percentage
+```
+
+I calculated the percentage of games won and lost to better understand the overall distribution of match outcomes in the dataset.
+
+# 4. Statistical Analysis
+
+### 4.a Average Game Duration
+
+```{r}
+avg_game_duration <- round(mean(league_clean$game_duration_min), 2)
+
+avg_game_duration
+```
+
+### 4.b Average Games Played Per Day
+
+```{r}
+games_per_day <- league_clean %>%
+  mutate(date = as.Date(game_start_utc)) %>%
+  group_by(date) %>%
+  summarise(
+    total_games = n(),
+    .groups = "drop"
+  )
+
+avg_games_per_day <- round(mean(games_per_day$total_games), 2)
+
+avg_games_per_day
+```
+
+I calculated the average game duration and the average number of games played per day to better understand the general activity and match length in the dataset.
+
+### 4.c Longest and Shortest Game
+
+```{r}
+
+
+longest_game <- round(max(league_clean$game_duration_min), 2)
+
+shortest_game <- round(min(league_clean$game_duration_min), 2)
+
+longest_game
+shortest_game
+```
+
+I identified the longest and shortest matches in the dataset to better understand the range of game durations.
+
+### 4.d Hypothesis Test
+
+**Null Hypothesis:** Winning and losing players deal the same average damage.
+
+**Alternative Hypothesis:** Winning and losing players deal different average damage.
+
+```{r}
+
+damage_test <- t.test(
+  total_damage_dealt_to_champions ~ win,
+  data = league_clean
+)
+
+damage_test
+```
+
+I used a t-test to compare the average champion damage between winners and losers. The p-value was less than 0.05, so the null hypothesis was rejected. This suggests that there is a statistically significant difference in damage dealt between winning and losing players. On average, winning players dealt more damage than losing players.
+
+### 4.e Linear Regression
+
+```{r}
+gold_model <- lm(
+  gold_earned ~ total_damage_dealt_to_champions,
+  data = league_clean
+)
+
+summary(gold_model)
+```
+
+I used linear regression to analyze the relationship between champion damage and gold earned. The regression results showed a strong positive relationship between the two variables. The R-squared value was approximately 0.72, meaning that around 72% of the variation in gold earned can be explained by champion damage. The p-value was less than 0.05, indicating that the relationship was statistically significant.
+
+# 5. Data Visualization
+
+### 5.a Relationship Between Damage and Gold Earned
+
+```{r}
+gold_damage_chart <- league_clean %>%
+  sample_n(3000) %>%
+  ggplot(
+    aes(
+      x = total_damage_dealt_to_champions,
+      y = gold_earned
+    )
+  ) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Relationship Between Damage and Gold Earned",
+    subtitle = "Sample of 3,000 games",
+    x = "Damage Dealt to Champions",
+    y = "Gold Earned"
+  ) +
+  theme_minimal()
+
+gold_damage_chart
+```
+
+This scatter plot visualizes the relationship between champion damage and gold earned. The graph shows that players who deal more damage generally earn more gold.
+
+### 5.b Wins and Losses Percentage
+
+```{r}
+win_loss_chart <- ggplot(
+  win_loss_percentage,
+  aes(x = ifelse(win, "Win", "Loss"), y = percentage, fill = win)
+) +
+  geom_col(width = 0.5, color = "white") +
+  geom_text(
+    aes(label = paste0(percentage, "%")),
+    vjust = -0.5,
+    size = 4
+  ) +
+  scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#F44336"), guide = "none") +
+  labs(
+    title = "Wins and Losses Percentage",
+    subtitle = "By Team",
+    x = "Team",
+    y = "Win Percentage"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  )
+
+win_loss_chart
+```
+
+This visualization compares the percentage of wins and losses in the dataset.
+
+### 5.c Role Distribution Percentage
+
+
+```{r}
+role_percentage <- league_clean %>%
+  group_by(individual_position) %>%
+  summarise(
+    total_games = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    percentage = round((total_games / sum(total_games)) * 100, 2),
+    label = paste0(percentage, "%")
+  )
+
+role_pie_chart <- ggplot(
+  role_percentage,
+  aes(x = "", y = percentage, fill = individual_position)
+) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    size = 4
+  ) +
+  labs(
+    title = "Role Distribution Percentage",
+    fill = "Role"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    legend.title = element_text(face = "bold")
+  )
+
+role_pie_chart
+```
+
+This pie chart visualizes the percentage distribution of each role in the dataset.
+
+### 5.d Damage Type Distribution
+
+```{r}
+damage_types <- tibble(
+  damage_type = c("Physical", "Magic", "True"),
+  total_damage = c(
+    sum(league_clean$physical_damage_dealt_to_champions),
+    sum(league_clean$magic_damage_dealt_to_champions),
+    sum(league_clean$true_damage_dealt_to_champions)
+  )
+) %>%
+  mutate(
+    percentage = round((total_damage / sum(total_damage)) * 100, 2),
+    label = paste0(percentage, "%")
+  )
+
+damage_type_chart <- ggplot(
+  damage_types,
+  aes(x = "", y = percentage, fill = damage_type)
+) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    size = 5
+  ) +
+  labs(
+    title = "Damage Type Distribution",
+    fill = "Damage Type"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    legend.title = element_text(face = "bold")
+  )
+
+damage_type_chart
+```
+
+This chart visualizes the percentage distribution of physical, magic, and true damage in the dataset.
